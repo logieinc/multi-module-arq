@@ -1,0 +1,177 @@
+profile: metro
+stack_env: metro
+
+vars:
+  TS_NODE_DEV_CMD: "ts-node-dev --respawn --inspect=0.0.0.0:9229 --pretty --transpile-only src/server.ts --host=0.0.0.0"
+
+common_env:
+  # FG | Migracion dev-shell: variables antes en config/env-metro/.env.common
+  STACK_ENV: metro
+  LOG_LEVEL: debug
+  JWT_SECRET: secret
+  JWT_ISSUER: issuer
+  SECURITY_DB_HOST: stg-main-metro-db-cluster.cluster-c0twq0iic9h9.us-east-1.rds.amazonaws.com
+  SECURITY_DB_PORT: "5432"
+  SECURITY_DB_USER: fgiordano
+  SECURITY_DB_PASSWORD: mRWqYMttavrtn44AvXjp
+  SECURITY_DB_NAME: api-security
+  AUTH_DB_HOST: stg-main-metro-db-cluster.cluster-c0twq0iic9h9.us-east-1.rds.amazonaws.com
+  AUTH_DB_PORT: "5432"
+  AUTH_DB_USER: fgiordano
+  AUTH_DB_PASSWORD: mRWqYMttavrtn44AvXjp
+  AUTH_DB_NAME: api-auth
+  WALLET_DB_HOST: stg-main-metro-db-cluster.cluster-c0twq0iic9h9.us-east-1.rds.amazonaws.com
+  WALLET_DB_PORT: "5432"
+  WALLET_DB_USER: fgiordano
+  WALLET_DB_PASSWORD: mRWqYMttavrtn44AvXjp
+  WALLET_DB_NAME: api-wallet
+
+nginx:
+  port: 3000
+
+services:
+  security-db:
+    type: database
+    db_key: security
+    use_local: false
+    host: ${SECURITY_DB_HOST}
+    user: ${SECURITY_DB_USER}
+    password: ${SECURITY_DB_PASSWORD}
+    name: ${SECURITY_DB_NAME}
+    port: ${SECURITY_DB_PORT}
+
+  auth-db:
+    type: database
+    db_key: auth
+    use_local: false
+    host: ${AUTH_DB_HOST}
+    user: ${AUTH_DB_USER}
+    password: ${AUTH_DB_PASSWORD}
+    name: ${AUTH_DB_NAME}
+    port: ${AUTH_DB_PORT}
+
+  wallet-db:
+    type: database
+    db_key: wallet
+    use_local: false
+    host: ${WALLET_DB_HOST}
+    user: ${WALLET_DB_USER}
+    password: ${WALLET_DB_PASSWORD}
+    name: ${WALLET_DB_NAME}
+    port: ${WALLET_DB_PORT}
+
+  authorizer:
+    enabled: true
+    repo: repos/authorizer
+    port: 5108
+    debug_port: 5110
+    command: ${TS_NODE_DEV_CMD}
+    env:
+      LOG_LEVEL: ${LOG_LEVEL}
+      SERVICE_ENV: ${STACK_ENV}
+      DATABASE_URL: "postgresql://${SECURITY_DB_USER}:${SECURITY_DB_PASSWORD}@${SECURITY_DB_HOST}:${SECURITY_DB_PORT}/${SECURITY_DB_NAME}?schema=public"
+      JWT_SECRET: ${JWT_SECRET:-secret}
+      JWT_ISSUER: ${JWT_ISSUER:-issuer}
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+
+  api-auth:
+    enabled: true
+    repo: repos/api-auth
+    port: 5208
+    debug_port: 5210
+    command: ${TS_NODE_DEV_CMD}
+    env:
+      LOG_LEVEL: ${LOG_LEVEL}
+      API_PREFIX: /
+      SWAGGER_ENABLE: "1"
+      JWT_SECRET: ${JWT_SECRET:-secret}
+      JWT_ISSUER: ${JWT_ISSUER:-issuer}
+      HEALTH_TOKEN: ${HEALTH_TOKEN_AUTH:-health}
+      PASSENGERS_ALLOWED: yes
+      API_SECURITY_AUTH: http://api-security:5308
+      API_WALLET_URL: http://api-wallet:4606
+      MAX_SESSIONS_BY_USER: "5"
+      REDIS_URL: ""
+      USE_SNS_EVENTS: "false"
+      SNS_HOOKS_TOPIC_ARN: ""
+      CORE_API_TOKEN: ""
+      MAGIC_CODE_CHARACTERS_LIST: abcdefghjkmnpqrstuvwxyz23456789
+      MAGIC_CODE_LENGTH: "6"
+      USERNAME_VALIDATION_REGEX: "^[a-zA-Z0-9_]{8,20}$"
+      PASSWORD_VALIDATION_REGEX: "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)[A-Za-z\\d@$!%*?&]{8,20}$"
+      DEFAULT_PLAYER_ROLE: PLAYER
+
+  api-security:
+    enabled: true
+    repo: repos/api-security
+    port: 5308
+    debug_port: 5310
+    command: "npm run start:debug -- --host=0.0.0.0"
+    env:
+      LOG_LEVEL: ${LOG_LEVEL}
+      ALLOW_EMPTY_PASSWORD: yes
+      API_PREFIX: /api/v1
+      SWAGGER_ENABLE: "1"
+      HEALTH_TOKEN: ${HEALTH_TOKEN_SECURITY:-health}
+      MAX_ACTIVE_TOKENS: "5"
+      PRISMA_LOG_LEVEL: info
+      JWT_SECRET: ${JWT_SECRET:-secret}
+      JWT_ISSUER: ${JWT_ISSUER:-issuer}
+
+  api-wallet:
+    enabled: true
+    repo: repos/api-wallet
+    port: 4606
+    debug_port: 4610
+    command: ${TS_NODE_DEV_CMD}
+    env:
+      LOG_LEVEL: ${LOG_LEVEL}
+      API_PREFIX: /api/v1
+      SWAGGER_ENABLE: "1"
+      JWT_SECRET: ${JWT_SECRET:-secret}
+      JWT_ISSUER: ${JWT_ISSUER:-issuer}
+      HEALTH_TOKEN: ${HEALTH_TOKEN_WALLET:-health}
+      LIMITS_ENABLED: "false"
+      REDIS_URL: ""
+      USE_SNS_EVENTS: "false"
+      SNS_HOOKS_TOPIC_ARN: ""
+      MAIN_OPEN_SEARCH_URL: http://opensearch:9200
+      OPERATION_STATUS_LOG_ENABLED: "true"
+
+  api-playerv2:
+    enabled: true
+    repo: repos/api-playerv2
+    port: 4000
+    debug_port: 4010
+    command: nodemon
+    env:
+      LOG_LEVEL: ${LOG_LEVEL}
+      API_PREFIX: /api/v1
+      SWAGGER_ENABLE: "1"
+      JWT_SECRET: ${JWT_SECRET:-secret}
+      JWT_ISSUER: ${JWT_ISSUER:-issuer}
+      HEALTH_TOKEN: ${HEALTH_TOKEN_PLAYERV2:-health}
+      AUTH_API_URL: http://api-auth:5208
+      AUTH_API_PREFIX: ""
+      SECURITY_API_URL: http://api-security:5308
+      SECURITY_API_PREFIX: /api/v1
+      WALLET_API_URL: http://api-wallet:4606
+      WALLET_API_PREFIX: /api/v1
+      PAYMENT_API_URL: http://api-payments:3200
+      PAYMENT_API_PREFIX: /api/v1
+      API_KEY: ${PLAYER_API_KEY:-local-player-api-key}
+      PARENT_ID: ${PLAYER_PARENT_ID:-local-parent-id}
+      DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-DOP}
+      MAX_SESSIONS_BY_USER: "5"
+
+  storefront-games:
+    enabled: true
+    repo: repos/storefront-games
+    port: 4200
+    debug_port: 4210
+    # Allow direct localhost access and nginx upstream access (host: storefront-games) in local dev.
+    command: "npm install --quiet && node --inspect=0.0.0.0:9229 ./node_modules/@angular/cli/bin/ng serve --configuration=metro-local --host=0.0.0.0 --port=4200 --allowed-hosts=localhost --allowed-hosts=storefront-games"
+    env:
+      LOG_LEVEL: ${LOG_LEVEL}
+      NG_CLI_ANALYTICS: "false"
+      CHOKIDAR_USEPOLLING: "true"

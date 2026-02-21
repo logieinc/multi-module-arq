@@ -1,0 +1,13 @@
+{
+  "name": "napa-multi-module",
+  "private": true,
+  "scripts": {
+    "dev-shell:install": "npm --prefix ops/dev-shell install",
+    "dev-shell:profiles": "npm --silent --prefix ops/dev-shell run --silent profiles --",
+    "dev-shell:generate": "npm --silent --prefix ops/dev-shell run --silent generate --",
+    "dev-shell:prepare-env": "npm --silent --prefix ops/dev-shell run --silent prepare-env --",
+    "dev-shell:up": "npm --silent --prefix ops/dev-shell run --silent up --",
+    "dev-shell:down": "npm --silent --prefix ops/dev-shell run --silent down --",
+    "dev-shell:services": "npm --silent --prefix ops/dev-shell run --silent services --"
+  }
+}

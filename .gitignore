@@ -1,0 +1,20 @@
+# OS / Editor
+.DS_Store
+.vscode/
+
+# Node
+node_modules/
+ops/dev-shell/node_modules/
+
+# Generated artifacts
+.generated/
+
+# Local environment files
+.env
+.env.*
+
+# Local cloned services (managed as independent repos)
+repos/
+
+# Temporary local workspace (scratch files)
+temp/
