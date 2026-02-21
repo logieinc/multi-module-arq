@@ -11,6 +11,9 @@ export interface NginxConfig {
 
 export interface ServiceConfig {
   enabled?: boolean;
+  generate_env?: boolean;
+  include_common_env?: boolean;
+  env_output?: string;
   type?: string;
   kind?: string;
   db_key?: string;
@@ -30,6 +33,8 @@ export interface ProfileConfig {
   profile?: string;
   stack_env?: string;
   workspace_root?: string;
+  merge_common_env_into_services?: boolean;
+  auto_generate_common_env?: string[];
   vars?: Record<string, unknown>;
   common_env?: Record<string, unknown>;
   nginx?: NginxConfig;
@@ -62,4 +67,6 @@ export interface GenerateResult {
   composeFile: string;
   nginxFile: string;
   enabledServices: string[];
+  generatedAutoKeys?: string[];
+  autoSecretsFile?: string;
 }

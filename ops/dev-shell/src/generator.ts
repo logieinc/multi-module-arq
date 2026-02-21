@@ -1,4 +1,8 @@
+/**
+ * Signature: Fabian Giordano <fabian@logieinc.com>
+ */
 import fs from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import YAML from 'yaml';
 
@@ -42,8 +46,14 @@ interface RuntimeConfig {
   sourceContext: Record<string, string>;
   generatedContext: Record<string, string>;
   commonEnv: Record<string, string>;
+  mergeCommonEnvIntoServices: boolean;
+  autoGenerateCommonEnvKeys: Set<string>;
+  autoSecretsPath: string;
+  autoSecrets: Record<string, string>;
+  generatedAutoKeys: string[];
   dbConfigs: Map<string, DbConfig>;
   enabledServices: string[];
+  envTargetServices: string[];
 }
 
 interface ResolvedNginxRoute {
@@ -74,6 +84,32 @@ function toStringMap(env: NodeJS.ProcessEnv): Record<string, string> {
   return output;
 }
 
+function parseEnvFile(contents: string): Record<string, string> {
+  const output: Record<string, string> = {};
+  const lines = contents.split(/\r?\n/g);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+    const separator = trimmed.indexOf('=');
+    if (separator <= 0) {
+      continue;
+    }
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim();
+    if (!key) {
+      continue;
+    }
+    output[key] = value;
+  }
+  return output;
+}
+
+function generateApiKey(): string {
+  return `devops_${randomBytes(32).toString('base64url')}`;
+}
+
 function loadProfileConfig(workspaceRoot: string, profileName: string): { profilePath: string; profile: ProfileConfig } {
   const profilePath = resolveProfilePath(workspaceRoot, profileName);
   const raw = readText(profilePath);
@@ -90,6 +126,18 @@ function buildRuntimeConfig(profileName: string, workspaceRootInput?: string): R
   const stackEnv = String(profile.stack_env || profile.profile || profileName);
 
   const sourceContext = toStringMap(process.env);
+  const autoSecretsPath = path.join(generatedProfileDir(workspaceRoot, profileName), 'auto-secrets.env');
+  const autoSecrets = parseEnvFile(readText(autoSecretsPath));
+  const autoGenerateCommonEnvKeys = new Set(
+    Array.isArray(profile.auto_generate_common_env)
+      ? profile.auto_generate_common_env
+          .filter((value): value is string => typeof value === 'string')
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0)
+      : [],
+  );
+  const generatedAutoKeys: string[] = [];
+
   const generatedContext: Record<string, string> = {
     STACK_ENV: stackEnv,
     WORKSPACE_ROOT: String(profile.workspace_root || workspaceRoot),
@@ -117,13 +165,28 @@ function buildRuntimeConfig(profileName: string, workspaceRootInput?: string): R
       ...contextForInterpolation(),
       ...commonEnv,
     });
-    commonEnv[key] = resolvedValue;
-    generatedContext[key] = resolvedValue;
+    let finalValue = resolvedValue;
+
+    if (autoGenerateCommonEnvKeys.has(key) && finalValue.trim().length === 0) {
+      const persistedValue = (autoSecrets[key] || '').trim();
+      if (persistedValue.length > 0) {
+        finalValue = persistedValue;
+      } else {
+        finalValue = generateApiKey();
+        autoSecrets[key] = finalValue;
+        generatedAutoKeys.push(key);
+      }
+    }
+
+    commonEnv[key] = finalValue;
+    generatedContext[key] = finalValue;
   }
 
   const services = profile.services ?? {};
+  const mergeCommonEnvIntoServices = profile.merge_common_env_into_services !== false;
   const dbConfigs = new Map<string, DbConfig>();
   const enabledServices: string[] = [];
+  const envTargetServices: string[] = [];
 
   for (const [serviceName, service] of Object.entries(services)) {
     const serviceConfig = (service ?? {}) as ServiceConfig;
@@ -169,21 +232,31 @@ function buildRuntimeConfig(profileName: string, workspaceRootInput?: string): R
     }
 
     const enabled = serviceConfig.enabled !== false;
+    const generateEnvOnly = serviceConfig.generate_env === true;
     const serviceRepoPath = path.join(
       workspaceRoot,
       String(serviceConfig.repo || path.join('repos', serviceName)),
     );
     const repoExists = fs.existsSync(serviceRepoPath);
     const effectiveEnabled = enabled && repoExists;
+    const effectiveEnvTarget = (effectiveEnabled || generateEnvOnly) && repoExists;
 
     if (enabled && !repoExists) {
       console.warn(
         `[generate] Service ${serviceName} is enabled in profile but repo is missing: ${serviceRepoPath}. Skipping service.`,
       );
     }
+    if (generateEnvOnly && !repoExists) {
+      console.warn(
+        `[generate] Service ${serviceName} has generate_env=true but repo is missing: ${serviceRepoPath}. Skipping env generation.`,
+      );
+    }
 
     if (effectiveEnabled) {
       enabledServices.push(serviceName);
+    }
+    if (effectiveEnvTarget) {
+      envTargetServices.push(serviceName);
     }
 
     const token = normalizeServiceToken(serviceName);
@@ -217,8 +290,14 @@ function buildRuntimeConfig(profileName: string, workspaceRootInput?: string): R
     sourceContext,
     generatedContext,
     commonEnv,
+    mergeCommonEnvIntoServices,
+    autoGenerateCommonEnvKeys,
+    autoSecretsPath,
+    autoSecrets,
+    generatedAutoKeys,
     dbConfigs,
     enabledServices,
+    envTargetServices,
   };
 }
 
@@ -261,7 +340,8 @@ function buildServiceEnv(serviceName: string, serviceConfig: ServiceConfig, runt
     ...runtime.generatedContext,
   };
 
-  const envMap: Record<string, string> = { ...runtime.commonEnv };
+  const includeCommonEnv = serviceConfig.include_common_env ?? runtime.mergeCommonEnvIntoServices;
+  const envMap: Record<string, string> = includeCommonEnv ? { ...runtime.commonEnv } : {};
 
   const profileEnv = serviceConfig.env ?? {};
   const resolvedProfileEnv = interpolateRecord(
@@ -280,13 +360,41 @@ function buildServiceEnv(serviceName: string, serviceConfig: ServiceConfig, runt
     });
   }
 
-  if (!envMap.LOG_LEVEL && runtime.generatedContext.LOG_LEVEL) {
+  if (includeCommonEnv && !envMap.LOG_LEVEL && runtime.generatedContext.LOG_LEVEL) {
     envMap.LOG_LEVEL = runtime.generatedContext.LOG_LEVEL;
   }
 
   ensureDatabaseUrls(serviceName, envMap, runtime);
 
   return envMap;
+}
+
+function resolveServiceEnvOutputFile(serviceConfig: ServiceConfig, stackEnv: string): string {
+  const configured = typeof serviceConfig.env_output === 'string' ? serviceConfig.env_output.trim() : '';
+  if (configured.length > 0) {
+    return configured;
+  }
+  return `.env.${stackEnv}`;
+}
+
+function writeAutoSecrets(runtime: RuntimeConfig): void {
+  if (runtime.generatedAutoKeys.length === 0) {
+    return;
+  }
+
+  const output: Record<string, string> = {};
+  for (const key of runtime.autoGenerateCommonEnvKeys) {
+    const value = (runtime.autoSecrets[key] || '').trim();
+    if (value.length > 0) {
+      output[key] = value;
+    }
+  }
+
+  if (Object.keys(output).length === 0) {
+    return;
+  }
+
+  writeText(runtime.autoSecretsPath, serializeEnv(output));
 }
 
 function pruneCompose(composeSource: Record<string, unknown>, servicesToRemove: Set<string>): Record<string, unknown> {
@@ -345,6 +453,27 @@ function ensureComposeDebugPorts(compose: Record<string, unknown>, runtime: Runt
     serviceConfig.ports = ports;
   }
 
+  compose.services = services;
+}
+
+function ensureApiDevopsWorkspaceRootMount(compose: Record<string, unknown>, runtime: RuntimeConfig): void {
+  const services = (compose.services ?? {}) as Record<string, Record<string, unknown>>;
+  const apiDevops = services['api-devops'];
+  if (!apiDevops || typeof apiDevops !== 'object') {
+    compose.services = services;
+    return;
+  }
+
+  const rawVolumes = apiDevops.volumes;
+  const volumes = Array.isArray(rawVolumes) ? rawVolumes.map((entry) => String(entry)) : [];
+  const hasWorkspaceRootMount = volumes.some((entry) => /:\/workspace(?::|$)/.test(entry));
+  if (!hasWorkspaceRootMount) {
+    // api-devops needs the workspace root to read config/profiles and generated artifacts.
+    volumes.unshift(`${runtime.workspaceRoot}:/workspace`);
+  }
+
+  apiDevops.volumes = volumes;
+  services['api-devops'] = apiDevops;
   compose.services = services;
 }
 
@@ -671,7 +800,7 @@ function writeGeneratedEnvs(runtime: RuntimeConfig, apply: boolean): void {
   const generatedServicesDir = path.join(generatedProfileDir(runtime.workspaceRoot, runtime.profileName), 'services');
   ensureDir(generatedServicesDir);
 
-  const enabledSet = new Set(runtime.enabledServices);
+  const envTargets = new Set(runtime.envTargetServices);
   const existingGenerated = fs
     .readdirSync(generatedServicesDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.env'))
@@ -679,14 +808,14 @@ function writeGeneratedEnvs(runtime: RuntimeConfig, apply: boolean): void {
 
   for (const fileName of existingGenerated) {
     const serviceName = fileName.replace(/\.env$/, '');
-    if (enabledSet.has(serviceName)) {
+    if (envTargets.has(serviceName)) {
       continue;
     }
     fs.unlinkSync(path.join(generatedServicesDir, fileName));
   }
 
   const services = runtime.profile.services ?? {};
-  for (const serviceName of runtime.enabledServices) {
+  for (const serviceName of runtime.envTargetServices) {
     const serviceConfig = services[serviceName] as ServiceConfig;
     const envMap = buildServiceEnv(serviceName, serviceConfig, runtime);
     const serialized = serializeEnv(envMap);
@@ -698,13 +827,21 @@ function writeGeneratedEnvs(runtime: RuntimeConfig, apply: boolean): void {
       continue;
     }
 
-    const targetPath = path.join(runtime.workspaceRoot, 'repos', serviceName, `.env.${runtime.stackEnv}`);
+    const repoPath = String(serviceConfig.repo || path.join('repos', serviceName));
+    const envOutputFile = resolveServiceEnvOutputFile(serviceConfig, runtime.stackEnv);
+    const targetPath = path.join(runtime.workspaceRoot, repoPath, envOutputFile);
     if (!fs.existsSync(path.dirname(targetPath))) {
       console.warn(`[generate] Skipping ${serviceName}: repo folder not found (${path.dirname(targetPath)})`);
       continue;
     }
 
     writeText(targetPath, serialized);
+
+    // Cleanup old context-suffixed files when a service now uses a fixed env output (e.g. ".env").
+    const legacyPath = path.join(runtime.workspaceRoot, repoPath, `.env.${runtime.stackEnv}`);
+    if (legacyPath !== targetPath && fs.existsSync(legacyPath)) {
+      fs.unlinkSync(legacyPath);
+    }
   }
 }
 
@@ -777,6 +914,7 @@ function writeGeneratedCompose(runtime: RuntimeConfig, stackEnvPath: string): st
 
   const pruned = pruneCompose(parsed, disabledServices);
   ensureComposeDebugPorts(pruned, runtime);
+  ensureApiDevopsWorkspaceRootMount(pruned, runtime);
   const outputPath = path.join(generatedProfileDir(runtime.workspaceRoot, runtime.profileName), 'docker-compose.yaml');
   writeText(outputPath, YAML.stringify(pruned));
 
@@ -835,19 +973,11 @@ export function listProfileNames(workspaceRoot?: string): string[] {
 export function generateProfile(options: GenerateOptions): GenerateResult {
   const runtime = buildRuntimeConfig(options.profile, options.workspaceRoot);
 
-  console.log(`[generate] profile=${runtime.profileName} stack_env=${runtime.stackEnv}`);
-  console.log(`[generate] profile source: ${runtime.profilePath}`);
-
+  writeAutoSecrets(runtime);
   writeGeneratedEnvs(runtime, options.apply);
   const stackEnvFile = writeGeneratedStackEnv(runtime);
   const composeFile = options.envOnly ? '' : writeGeneratedCompose(runtime, stackEnvFile);
   const nginxFile = options.envOnly ? '' : writeGeneratedNginx(runtime, options.apply);
-
-  console.log(`[generate] stack env: ${stackEnvFile}`);
-  if (!options.envOnly) {
-    console.log(`[generate] compose: ${composeFile}`);
-    console.log(`[generate] nginx: ${nginxFile}`);
-  }
 
   return {
     profile: runtime.profileName,
@@ -857,6 +987,8 @@ export function generateProfile(options: GenerateOptions): GenerateResult {
     composeFile,
     nginxFile,
     enabledServices: runtime.enabledServices,
+    generatedAutoKeys: runtime.generatedAutoKeys,
+    autoSecretsFile: runtime.generatedAutoKeys.length > 0 ? runtime.autoSecretsPath : undefined,
   };
 }
 

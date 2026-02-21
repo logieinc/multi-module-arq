@@ -20,6 +20,7 @@ services:
       API_SECURITY_PORT: "${API_SECURITY_PORT:-5308}"
       API_WALLET_PORT: "${API_WALLET_PORT:-4606}"
       API_PLAYERV2_PORT: "${API_PLAYERV2_PORT:-4000}"
+      API_DEVOPS_PORT: "${API_DEVOPS_PORT:-3408}"
       STOREFRONT_GAMES_PORT: "${STOREFRONT_GAMES_PORT:-4200}"
     volumes:
       # Use the rendered config directly. The template requires NGINX_SERVICE_LOCATIONS,
@@ -31,6 +32,7 @@ services:
       - api-security
       - api-wallet
       - api-playerv2
+      - api-devops
       - storefront-games
     restart: unless-stopped
     networks:
@@ -106,6 +108,20 @@ services:
       - "${API_PLAYERV2_PORT:-4000}:${API_PLAYERV2_PORT:-4000}"
       - "${API_PLAYERV2_DEBUG_PORT:-4010}:9229"
 
+  api-devops:
+    <<: *node-service
+    container_name: api-devops
+    working_dir: /workspace/repos/devops-module/api-devops
+    command: sh -c "npm install ts-node-dev@^2.0.0 --no-save --quiet || true; export PATH=/workspace/repos/devops-module/api-devops/node_modules/.bin:$$PATH; ${API_DEVOPS_CMD:-ts-node-dev --respawn --inspect=0.0.0.0:9229 --pretty --transpile-only src/index.ts}"
+    env_file:
+      - repos/devops-module/api-devops/.env
+    volumes:
+      - ${WORKSPACE_ROOT:-.}/repos/devops-module/api-devops:/workspace/repos/devops-module/api-devops
+      - api_devops_node_modules:/workspace/repos/devops-module/api-devops/node_modules
+    ports:
+      - "${API_DEVOPS_PORT:-3408}:${API_DEVOPS_PORT:-3408}"
+      - "${API_DEVOPS_DEBUG_PORT:-3410}:9229"
+
   storefront-games:
     <<: *node-service
     container_name: storefront-games
@@ -176,6 +192,7 @@ volumes:
   api_security_node_modules:
   api_wallet_node_modules:
   api_playerv2_node_modules:
+  api_devops_node_modules:
   storefront_games_node_modules:
   security_pg_data:
   auth_pg_data:

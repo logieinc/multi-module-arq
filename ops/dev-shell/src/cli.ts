@@ -1,13 +1,53 @@
+/**
+ * Signature: Fabian Giordano <fabian@logieinc.com>
+ */
 import { spawnSync } from 'node:child_process';
 
 import { failWith, generateProfile, listEnabledServices, listProfileNames, resolveWorkspaceRoot } from './generator.js';
 
 interface CliOptions {
   profile: string;
+  profileProvided: boolean;
   apply: boolean;
   workspaceRoot?: string;
   envOnly: boolean;
   dockerArgs: string[];
+}
+
+const ANSI = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  cyan: '\x1b[36m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+};
+
+function colorize(text: string, color: string): string {
+  if (!process.stdout.isTTY) return text;
+  return `${color}${text}${ANSI.reset}`;
+}
+
+function formatProfilesOutput(profiles: string[], defaultProfile: string): string[] {
+  const lines: string[] = [];
+  lines.push(colorize('Dev Shell Contexts', `${ANSI.bold}${ANSI.cyan}`));
+  lines.push(colorize('------------------', ANSI.dim));
+
+  if (profiles.length === 0) {
+    lines.push(colorize('No profiles found in config/profiles/profile-*.yaml', ANSI.yellow));
+    return lines;
+  }
+
+  lines.push(`${colorize(String(profiles.length), ANSI.green)} profile(s) available:`);
+  for (const profile of profiles) {
+    const isDefault = profile === defaultProfile;
+    const marker = isDefault ? colorize('●', ANSI.green) : colorize('○', ANSI.dim);
+    const defaultTag = isDefault ? colorize(' (default)', ANSI.green) : '';
+    lines.push(`${marker} ${profile}${defaultTag}`);
+  }
+
+  lines.push(colorize('Use: npm run dev-shell:generate <profile>', ANSI.cyan));
+  return lines;
 }
 
 function usage(): string {
@@ -41,6 +81,7 @@ function parseArgs(argv: string[]): { command: string; options: CliOptions } {
 
   const options: CliOptions = {
     profile: 'metro',
+    profileProvided: false,
     apply: true,
     envOnly: false,
     dockerArgs,
@@ -54,6 +95,7 @@ function parseArgs(argv: string[]): { command: string; options: CliOptions } {
       const value = cliArgs[i + 1];
       if (!value) throw new Error('Missing value for --profile');
       options.profile = value;
+      options.profileProvided = true;
       i += 1;
       continue;
     }
@@ -85,6 +127,7 @@ function parseArgs(argv: string[]): { command: string; options: CliOptions } {
     // to the explicit `--profile metro` form.
     if (!arg.startsWith('-') && !positionalProfileUsed) {
       options.profile = arg;
+      options.profileProvided = true;
       positionalProfileUsed = true;
       continue;
     }
@@ -109,14 +152,55 @@ function runDockerCompose(workspaceRoot: string, stackEnvFile: string, composeFi
   return docker.status ?? 1;
 }
 
+function printGenerateSummary(args: {
+  profile: string;
+  stackEnv: string;
+  generatedDir: string;
+  stackEnvFile: string;
+  composeFile: string;
+  nginxFile: string;
+  apply: boolean;
+  envOnly: boolean;
+  generatedAutoKeys?: string[];
+  autoSecretsFile?: string;
+}): void {
+  console.log(
+    `[dev-shell] Rendered profile=${args.profile} stack_env=${args.stackEnv}` +
+    `${args.envOnly ? ' (env-only)' : ''}`,
+  );
+  console.log(`[dev-shell] stack env: ${args.stackEnvFile}`);
+  console.log(`[dev-shell] services env: ${args.generatedDir}/services`);
+  if (!args.envOnly) {
+    console.log(`[dev-shell] compose: ${args.composeFile}`);
+    console.log(`[dev-shell] nginx: ${args.nginxFile}`);
+  }
+  if (args.apply) {
+    console.log('[dev-shell] applied env files to service repos');
+  }
+  if (Array.isArray(args.generatedAutoKeys) && args.generatedAutoKeys.length > 0 && args.autoSecretsFile) {
+    console.log(
+      `[dev-shell] auto-generated keys: ${args.generatedAutoKeys.join(', ')} (stored in ${args.autoSecretsFile})`,
+    );
+  }
+}
+
 function main(): void {
   const { command, options } = parseArgs(process.argv.slice(2));
   const workspaceRoot = resolveWorkspaceRoot(options.workspaceRoot);
 
+  if (command !== 'profiles' && !options.profileProvided) {
+    const profiles = listProfileNames(workspaceRoot);
+    const profileList = profiles.length > 0 ? profiles.join(', ') : '(none)';
+    console.log(`[dev-shell] No profile provided; using default profile: ${options.profile}`);
+    console.log(`[dev-shell] Available profiles: ${profileList}`);
+    console.log('[dev-shell] List profiles: npm run dev-shell:profiles');
+  }
+
   if (command === 'profiles') {
     const profiles = listProfileNames(workspaceRoot);
-    for (const profile of profiles) {
-      console.log(profile);
+    const lines = formatProfilesOutput(profiles, options.profile);
+    for (const line of lines) {
+      console.log(line);
     }
     return;
   }
@@ -130,9 +214,14 @@ function main(): void {
   }
 
   if (command === 'prepare-env') {
-    generateProfile({
+    const generated = generateProfile({
       profile: options.profile,
       workspaceRoot,
+      apply: options.apply,
+      envOnly: true,
+    });
+    printGenerateSummary({
+      ...generated,
       apply: options.apply,
       envOnly: true,
     });
@@ -140,9 +229,14 @@ function main(): void {
   }
 
   if (command === 'generate') {
-    generateProfile({
+    const generated = generateProfile({
       profile: options.profile,
       workspaceRoot,
+      apply: options.apply,
+      envOnly: options.envOnly,
+    });
+    printGenerateSummary({
+      ...generated,
       apply: options.apply,
       envOnly: options.envOnly,
     });

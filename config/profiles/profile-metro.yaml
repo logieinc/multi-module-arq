@@ -1,15 +1,44 @@
 profile: metro
 stack_env: metro
+# false => common_env se usa para interpolar, no se inyecta automaticamente en cada services.*.env.
+merge_common_env_into_services: false
+# Si faltan/estan vacias, estas claves se autogeneran y persisten en .generated/dev-shell/<profile>/auto-secrets.env.
+auto_generate_common_env:
+  - DEVOPS_SHARED_API_KEY
 
 vars:
   TS_NODE_DEV_CMD: "ts-node-dev --respawn --inspect=0.0.0.0:9229 --pretty --transpile-only src/server.ts --host=0.0.0.0"
 
 common_env:
-  # FG | Migracion dev-shell: variables antes en config/env-metro/.env.common
+  # merge_common_env_into_services=false: se usa para interpolar y defaults globales.
+  # Solo se inyecta en services.*.env cuando include_common_env=true.
+  # Resolucion de ${VAR}: process.env del host -> claves previas de common_env -> default ${VAR:-x}.
+  # Contexto base
   STACK_ENV: metro
   LOG_LEVEL: debug
   JWT_SECRET: secret
   JWT_ISSUER: issuer
+
+  # DevOps API/shell (fuente principal)
+  DEVOPS_API_URL: ${DEVOPS_API_URL:-http://localhost:3408}
+  # Clave canonica del profile (agnostica a modulos).
+  DEVOPS_SHARED_API_KEY: ${DEVOPS_SHARED_API_KEY:-}
+  DEVOPS_CONTEXT: ${STACK_ENV}
+  DEVOPS_OPS_ALLOWED_ORIGINS: ${DEVOPS_OPS_ALLOWED_ORIGINS:-}
+
+  # Proxy de seguridad usado por api-devops
+  DEVOPS_SECURITY_API_URL: ${DEVOPS_SECURITY_API_URL:-http://api-security:5308/api/v1}
+  DEVOPS_SECURITY_TIMEOUT_MS: ${DEVOPS_SECURITY_TIMEOUT_MS:-15000}
+  DEVOPS_SECURITY_BEARER_TOKEN: ${DEVOPS_SECURITY_BEARER_TOKEN:-}
+  DEVOPS_SECURITY_JWT_SECRET: ${JWT_SECRET}
+  DEVOPS_SECURITY_JWT_ISSUER: ${JWT_ISSUER}
+  DEVOPS_SECURITY_ROLE: ${DEVOPS_SECURITY_ROLE:-restricted}
+  DEVOPS_SECURITY_PARTY_ID: ${DEVOPS_SECURITY_PARTY_ID:-system}
+  DEVOPS_SECURITY_CHAIN: ${DEVOPS_SECURITY_CHAIN:-system}
+  DEVOPS_SECURITY_USERNAME: ${DEVOPS_SECURITY_USERNAME:-devops-shell}
+  DEVOPS_SECURITY_USER_ID: ${DEVOPS_SECURITY_USER_ID:-0}
+
+  # Credenciales DB compartidas
   SECURITY_DB_HOST: stg-main-metro-db-cluster.cluster-c0twq0iic9h9.us-east-1.rds.amazonaws.com
   SECURITY_DB_PORT: "5432"
   SECURITY_DB_USER: fgiordano
@@ -163,6 +192,37 @@ services:
       PARENT_ID: ${PLAYER_PARENT_ID:-local-parent-id}
       DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-DOP}
       MAX_SESSIONS_BY_USER: "5"
+
+  api-devops:
+    enabled: true
+    repo: repos/devops-module/api-devops
+    # Genera repos/devops-module/api-devops/.env
+    env_output: .env
+    port: 3408
+    debug_port: 3410
+    command: "ts-node-dev --respawn --inspect=0.0.0.0:9229 --pretty --transpile-only src/index.ts"
+    env:
+      LOG_LEVEL: ${LOG_LEVEL}
+      PORT: ${API_DEVOPS_PORT}
+      DEVOPS_CONTEXT: ${DEVOPS_CONTEXT}
+      DEVOPS_WORKSPACE_ROOT: ${WORKSPACE_ROOT}
+      DEVOPS_DATA_PATH: ./data/store.json
+      # Mapeo desde clave canonica de profile -> variable esperada por api-devops.
+      DEVOPS_OPS_API_KEY: ${DEVOPS_SHARED_API_KEY}
+      DEVOPS_OPS_ALLOWED_ORIGINS: ${DEVOPS_OPS_ALLOWED_ORIGINS}
+      CORS_ORIGIN: "*"
+
+  shell-devops:
+    enabled: false
+    generate_env: true
+    include_common_env: false
+    repo: repos/devops-module/shell-devops
+    # Genera repos/devops-module/shell-devops/.env con solo URL + API key.
+    env_output: .env
+    env:
+      DEVOPS_API_URL: ${DEVOPS_API_URL}
+      # Mapeo desde clave canonica de profile -> variable esperada por shell-devops.
+      DEVOPS_API_KEY: ${DEVOPS_SHARED_API_KEY}
 
   storefront-games:
     enabled: true
